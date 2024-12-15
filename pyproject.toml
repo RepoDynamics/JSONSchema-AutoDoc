@@ -1,0 +1,27 @@
+
+[build-system]
+requires = ["setuptools>=61.0", "versioningit"]
+build-backend = "setuptools.build_meta"
+
+
+# ----------------------------------------- setuptools -------------------------------------------
+[tool.setuptools]
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+
+# ----------------------------------------- Project Metadata -------------------------------------
+#
+[project]
+version = "0.0.0.dev1"
+name = "JSONSchema-MDit"
+requires-python = ">=3.10"
+dependencies = [
+    "MDit == 0.0.0.dev52",
+    "PySerials == 0.0.0.dev55",
+    "PyLinks == 0.0.0.dev65",
+]
