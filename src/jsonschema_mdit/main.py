@@ -17,6 +17,7 @@ class DocGen:
     ):
         self._registry = None
         self._tag_prefix: str = ""
+        self._ref_tag_prefix: str = ""
         self._doc = None
         self._ref_ids = []
         self._ref_ids_all = []
@@ -28,22 +29,23 @@ class DocGen:
         registry = None,
         root_key: str = "$",
         tag_prefix: str = "ccc-",
+        ref_tag_prefix: str = "cccdef-",
     ):
         self._ref_ids_all = []
         self._ref_ids = []
         self._registry = registry
         self._tag_prefix = tag_prefix
+        self._ref_tag_prefix = ref_tag_prefix
         self._doc = _mdit.document(
             heading=self._make_heading(key=root_key, path=root_key, schema=schema)
         )
         self._generate(schema=schema, path=root_key)
         if not self._ref_ids:
-            return self._doc
+            return self._doc, {}
         # Add reference schemas
-        self._doc.open_section(
-            heading="References",
-            key="ref",
-        )
+        main_doc = self._doc
+        ref_docs = {}
+        self._tag_prefix = ref_tag_prefix
         while self._ref_ids:
             ref_ids_curr = self._ref_ids
             self._ref_ids = []
@@ -51,16 +53,14 @@ class DocGen:
             for ref_id_curr in ref_ids_curr:
                 ref_schema = self._registry[ref_id_curr].contents
                 key_slug = _pl.string.to_slug(ref_schema.get("title", ref_id_curr))
-
-                self._doc.open_section(
+                if key_slug in ref_docs:
+                    raise ValueError(f"Key {key_slug} is a duplicate.")
+                self._doc = _mdit.document(
                     heading=self._make_heading(key=key_slug, path=key_slug, schema=ref_schema),
-                    key=key_slug
                 )
                 self._generate(schema=ref_schema, path=key_slug)
-                self._doc.close_section()
-
-        self._doc.close_section()
-        return self._doc
+                ref_docs[key_slug] = self._doc
+        return main_doc, ref_docs
 
     def _generate(self, schema: dict, path: str):
 
@@ -93,10 +93,11 @@ class DocGen:
                 return
 
             def _add_schema_block():
+                sanitized_schema = _sanitize_schema(schema)
                 yaml_dropdown = _mdit.element.dropdown(
                     title="YAML",
                     body=_mdit.element.code_block(
-                        content=_ps.write.to_yaml_string(schema),
+                        content=_ps.write.to_yaml_string(sanitized_schema),
                         language="yaml",
 
                     ),
@@ -104,7 +105,7 @@ class DocGen:
                 json_dropdown = _mdit.element.dropdown(
                     title="JSON",
                     body=_mdit.element.code_block(
-                        content=_ps.write.to_json_string(schema, indent=4, default=str),
+                        content=_ps.write.to_json_string(sanitized_schema, indent=4, default=str),
                         language="yaml",
                     ),
                 )
@@ -194,7 +195,7 @@ class DocGen:
                 if "title" in sub_schema:
                     sub_title = self._make_title(key=schema_key, schema=sub_schema)
                     self._doc.current_section.body.append(
-                        f":::{{rubric}} {sub_title}\n:heading-level: 2"
+                        f":::{{rubric}} {sub_title}\n:heading-level: 2\n:::"
                     )
                 self._generate(sub_schema, path=path)
                 self._doc.close_section()
@@ -343,12 +344,27 @@ class DocGen:
         if not ref_id:
             return []
         ref = self._get_ref(schema)
-        return [_make_static_badge_item("Ref", ref.get("title", ref_id))]
+        return [_make_static_badge_item("Ref", ref.get("title", ref_id), link=f"#")]
 
 
 
-def _make_static_badge_item(label, message) -> dict:
-    return {"label": label, "args": {"message": str(message)}}
+def _make_static_badge_item(label, message, link: str | None = None) -> dict:
+    badge = {"label": label, "args": {"message": str(message)}}
+    if link:
+        badge["link"] = link
+    return badge
 
-
-
+def _sanitize_schema(schema: dict):
+    sanitized = {}
+    for key, value in schema.items():
+        if key in ("title", "description", "default", "description_default", "examples", "description_examples"):
+            continue
+        if key in ("properties", "patternProperties"):
+            sanitized[key] = {k: _sanitize_schema(v) for k, v in value.items()}
+        elif key in ("additionalProperties", "unevaluatedProperties", "propertyNames", "items", "unevaluatedItems", "contains", "not"):
+            sanitized[key] = _sanitize_schema(value)
+        elif key in ("prefixItems", "allOf", "anyOf", "oneOf"):
+            sanitized[key] = [_sanitize_schema(subschema) for subschema in value]
+        else:
+            sanitized[key] = value
+    return sanitized
