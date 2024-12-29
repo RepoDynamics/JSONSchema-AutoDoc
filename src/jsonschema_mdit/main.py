@@ -1,5 +1,6 @@
 from __future__ import annotations as _annotations
 
+from operator import truediv
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 
 import mdit as _mdit
@@ -7,20 +8,19 @@ import pylinks as _pl
 import pyserials as _ps
 
 if _TYPE_CHECKING:
-    from typing import Literal, Sequence
+    from typing import Literal, Sequence, Callable
 
 
 class DocGen:
 
-    def __init__(
-        self,
-    ):
+    def __init__(self):
         self._registry = None
         self._tag_prefix: str = ""
         self._ref_tag_prefix: str = ""
         self._doc = None
         self._ref_ids = []
         self._ref_ids_all = []
+        self._ref_tag_root_keygen: Callable[[dict], str] = lambda schema: schema["$id"].split("/")[-1]
         return
 
     def generate(
@@ -30,12 +30,14 @@ class DocGen:
         root_key: str = "$",
         tag_prefix: str = "ccc-",
         ref_tag_prefix: str = "cccdef-",
+        ref_tag_root_keygen: Callable[[dict], str] = lambda schema: schema["$id"].split("/")[-1],
     ):
         self._ref_ids_all = []
         self._ref_ids = []
         self._registry = registry
         self._tag_prefix = tag_prefix
         self._ref_tag_prefix = ref_tag_prefix
+        self._ref_tag_root_keygen = ref_tag_root_keygen
         self._doc = _mdit.document(
             heading=self._make_heading(key=root_key, path=root_key, schema=schema)
         )
@@ -52,11 +54,15 @@ class DocGen:
             self._ref_ids_all.extend(ref_ids_curr)
             for ref_id_curr in ref_ids_curr:
                 ref_schema = self._registry[ref_id_curr].contents
-                key_slug = _pl.string.to_slug(ref_schema.get("title", ref_id_curr))
+                key_slug = _pl.string.to_slug(self._ref_tag_root_keygen(ref_schema))
                 if key_slug in ref_docs:
-                    raise ValueError(f"Key {key_slug} is a duplicate.")
+                    raise ValueError(f"Key '{key_slug}' is a duplicate in reference '{ref_id_curr}'.")
                 self._doc = _mdit.document(
-                    heading=self._make_heading(key=key_slug, path=key_slug, schema=ref_schema),
+                    heading=self._make_heading(
+                        key=key_slug,
+                        path=key_slug,
+                        schema=ref_schema
+                    ),
                 )
                 self._generate(schema=ref_schema, path=key_slug)
                 ref_docs[key_slug] = self._doc
@@ -65,6 +71,10 @@ class DocGen:
     def _generate(self, schema: dict, path: str):
 
         def _add_tabs():
+
+            def add_tab_item(content, title):
+                tab_items.append(_mdit.element.tab_item(content=content, title=title))
+                return
 
             def _add_default_block():
                 default = schema.get("default")
@@ -77,19 +87,34 @@ class DocGen:
                 if default:
                     try:
                         code = _mdit.element.code_block(
-                            content=_ps.write.to_yaml_string(default) if not isinstance(default, str) else default,
-                            language="yaml",
+                            content=(_ps.write.to_yaml_string(default) if not isinstance(default, str) else default).strip(),
+                            language="yaml" if not isinstance(default, str) else "text",
                         )
                     except Exception as ex:
                         print(default)
                         print(type(default))
                         raise ex
                     content.append(code)
-                tab_item = _mdit.element.tab_item(
-                    content=content,
-                    title="Default"
-                )
-                tab_items.append(tab_item)
+                add_tab_item(content=content, title="Default")
+                return
+
+            def _add_examples():
+                examples = schema.get("examples")
+                if not examples:
+                    return
+                descriptions = schema.get("description_examples", [])
+                desc_count = len(descriptions)
+                examples_list = _mdit.element.ordered_list()
+                for idx, example in enumerate(examples):
+                    example_block = _mdit.element.code_block(
+                        content=(_ps.write.to_yaml_string(example) if not isinstance(example, str) else example).strip(),
+                        language="yaml" if not isinstance(example, str) else "text",
+                    )
+                    if idx < desc_count:
+                        examples_list.append(_mdit.block_container(descriptions[idx], example_block))
+                    else:
+                        examples_list.append(example_block)
+                add_tab_item(content=examples_list, title="Examples")
                 return
 
             def _add_schema_block():
@@ -109,84 +134,79 @@ class DocGen:
                         language="yaml",
                     ),
                 )
-                tab_item = _mdit.element.tab_item(
+                add_tab_item(
                     content=_mdit.block_container(yaml_dropdown, json_dropdown),
                     title="JSONSchema"
                 )
-                tab_items.append(tab_item)
                 return
 
             tab_items = []
+
+            if "required" in schema:
+                req_list = []
+                for req in sorted(schema["required"]):
+                    req_code = f"`{req}`"
+                    if req in schema.get("properties", {}):
+                        req_code = f"[{req_code}](#{self._make_tag(f"{path}.{req}")})"
+                    req_list.append(req_code)
+                add_tab_item(
+                    content=_mdit.element.unordered_list(req_list),
+                    title="Required Properties"
+                )
+            if "const" in schema:
+                add_tab_item(
+                    content=_mdit.element.code_block(
+                        content=schema["const"],
+                        language="yaml",
+                    ),
+                    title="Const"
+                )
+            if "pattern" in schema:
+                add_tab_item(
+                    content=_mdit.element.code_block(
+                        content=schema["pattern"],
+                        language="regex",
+                    ),
+                    title="Pattern"
+                )
+            if "enum" in schema:
+                add_tab_item(
+                    content=_mdit.element.code_block(
+                        _ps.write.to_yaml_string(schema["enum"]),
+                        language="yaml",
+                    ),
+                    title="Enum"
+                )
             _add_default_block()
+            _add_examples()
             _add_schema_block()
             tab_set = _mdit.element.tab_set(content=tab_items)
             self._doc.current_section.body.append(tab_set)
             return
 
-        badges = (
-            [_make_static_badge_item(label="JSONPath", message=path)]
-            + self._make_ref_badge(schema)
-            + self._make_badges(schema, ("deprecated", "readOnly", "writeOnly", "type",))
-            + self._make_obj_badges(schema)
-            + self._make_array_badges(schema)
-            + self._make_badges(schema, ("format", "minLength", "maxLength"))
-            + self._make_badges(schema, ("exclusiveMinimum", "minimum", "exclusiveMaximum", "maximum",  "multipleOf"))
-        )
-
-        header = _mdit.element.badges(
-            items=badges,
-            separator=2,
-            service="static",
-            style="flat-square",
-            color="#0B3C75",
-            height="27px"
-        )
-        body = [header, "<hr>"]
-        if "const" in schema:
-            const = _mdit.element.code_block(
-                content=schema["const"],
-                language="yaml",
-                caption="Const",
-            )
-            body.append(const)
-        if "pattern" in schema:
-            pattern = _mdit.element.code_block(
-                content=schema["pattern"],
-                language="regex",
-                caption="Pattern",
-            )
-            body.append(pattern)
-        if "enum" in schema:
-            enums = schema["enum"]
-            enum_code_block = _mdit.element.code_block(
-                _ps.write.to_yaml_string(schema["enum"]),
-                language="yaml",
-                caption="Enum" if len(enums) < 5 else None
-            )
-            if len(enums) < 5:
-                body.append(enum_code_block)
-            else:
-                body.append(_mdit.element.dropdown("Enum", enum_code_block, opened=True))
-
-        if "description" in schema:
-            body.append(schema["description"])
+        body = [self._make_header_badges(schema=schema, path=path, size="large"), "<hr>"]
+        description_parts = schema.get("description", "").split("\n\n", 1)
+        if description_parts[0]:
+            body.append(description_parts[0])
         self._doc.current_section.body.extend(*body)
         _add_tabs()
+        if len(description_parts) > 1:
+            self._doc.current_section.body.append(description_parts[1])
 
-        for complex_key, resolver in (
-            ("properties", self._generate_properties),
-            ("patternProperties", self._generate_pattern_properties)
+        for complex_key, is_pattern in (
+            ("properties", False),
+            ("patternProperties", True)
         ):
             if complex_key in schema:
-                resolver(schema=schema[complex_key], path=path)
+                self._generate_properties(schema=schema, path=path, pattern=is_pattern)
         for schema_key, path_key in (
-            ("additionalProperties", "*"),
-            ("unevaluatedProperties", "*"),
-            ("propertyNames", "[key]"),
+            ("additionalProperties", ".*"),
+            ("unevaluatedProperties", ".*"),
+            ("propertyNames", "<KEY>"),
             ("items", "[i]"),
             ("unevaluatedItems", "[i]"),
             ("contains", "[i]"),
-            ("not", "[i]"),
+            ("not", ".!"),
         ):
             sub_schema = schema.get(schema_key)
             if isinstance(sub_schema, dict):
@@ -210,59 +230,86 @@ class DocGen:
                 title = _pl.string.camel_to_title(schema_list_key)
                 self._doc.open_section(heading=title, key=_pl.string.to_slug(title))
                 for idx, sub_schema in enumerate(sub_schema_list):
-                    title = sub_schema.get("title", str(idx))
+                    title = sub_schema.get("title")
+                    if not title and "$ref" in sub_schema:
+                        ref = self._get_ref(sub_schema)
+                        title = ref.get("title")
+                    if not title:
+                        title = str(idx)
                     self._doc.open_section(heading=title, key=_pl.string.to_slug(title))
                     self._generate(sub_schema, path=path)
                     self._doc.close_section()
                 self._doc.close_section()
         return
 
-    def _generate_properties(self, schema: dict, path: str):
-        self._doc.open_section(heading="Properties", key="properties")
+    def _generate_properties(self, schema: dict, path: str, pattern: bool):
+        self._doc.open_section(
+            heading=f"{"Pattern " if pattern else ""}Properties",
+            key=f"{"pattern-" if pattern else ""}properties"
+        )
         field_list = _mdit.element.field_list()
         self._doc.current_section.body.append(field_list)
-        for key, sub_schema in schema.items():
-            teaser = ""
+        for key, sub_schema in schema["patternProperties" if pattern else "properties"].items():
+            new_path = f"{path}[{key}]" if pattern else f"{path}.{key}"
+            list_item_body = _mdit.block_container(
+                self._make_header_badges(schema=sub_schema, path=new_path, size="medium", required=key in schema.get("required", {}))
+            )
             title = sub_schema.get("title")
-            if title:
-                teaser += f"{title}\n"
             desc = sub_schema.get("description")
             if desc:
-                teaser += desc.split("\n")[0]
-            field_list.append(
-                title=f"`{key}`",
-                body=teaser.strip()
-            )
-            new_path=f"{path}.{key}"
+                list_item_body.append(desc.split("\n\n")[0].strip())
+            elif title:
+                list_item_body.append(title.strip())
+            list_item_body.append("<hr>")
+            section_key = _pl.string.to_slug((title or key) if pattern else key)
+            field_list.append(title=f"[`{key}`](#{self._make_tag(new_path)})", body=list_item_body)
             self._doc.open_section(
-                heading=self._make_heading(key=key, path=new_path, schema=sub_schema),
-                key=key
+                heading=self._make_heading(key=section_key, path=new_path, schema=sub_schema),
+                key=section_key
             )
             self._generate(schema=sub_schema, path=new_path)
             self._doc.close_section()
         self._doc.close_section()
         return
 
-    def _generate_pattern_properties(self, schema: dict, path: str):
-        self._doc.open_section(heading="Pattern Properties", key="pattern-properties")
-        for key, sub_schema in schema.items():
-            key_slug = _pl.string.to_slug(sub_schema["title"])
-            new_path = f"{path}[{key}]"
-            self._doc.open_section(
-                heading=self._make_heading(key=key_slug, path=new_path, schema=sub_schema),
-                key=key_slug
+    def _make_header_badges(self, schema: dict, path: str, size: Literal["medium", "large"], required: bool | None = None):
+
+        def make_required_badge():
+            if not required:
+                return []
+            return [_make_static_badge_item(message="Required")]
+
+        badges = (
+            make_required_badge()
+            + [_make_static_badge_item(label="JSONPath", message=path)]
+            + self._make_ref_badge(schema)
+            + self._make_badges(schema, ("deprecated", "readOnly", "writeOnly", "type",))
+            + self._make_obj_badges(schema)
+            + self._make_array_badges(schema)
+            + self._make_badges(schema, ("format", "minLength", "maxLength"))
+            + self._make_badges(
+                schema,
+                ("exclusiveMinimum", "minimum", "exclusiveMaximum", "maximum", "multipleOf")
             )
-            self._generate(schema=sub_schema, path=new_path)
-            self._doc.close_section()
-        self._doc.close_section()
-        return
+        )
+        return _mdit.element.badges(
+            items=badges,
+            separator=2,
+            service="static",
+            style="flat-square",
+            color="#0B3C75",
+            classes=[f"shields-badge-{size}"]
+        )
 
     def _make_heading(self, key: str, path: str, schema: dict) -> _mdit.element.Heading:
         """Create a document heading with target anchor for a schema."""
         return _mdit.element.heading(
             content=self._make_title(key=key, schema=schema),
-            name=_pl.string.to_slug(f"{self._tag_prefix}{path}"),
+            name=self._make_tag(path=path),
         )
+
+    def _make_tag(self, path: str):
+        return _pl.string.to_slug(f"{self._tag_prefix}{path}")
 
     def _make_title(self, key: str, schema: dict) -> str:
         """Create a title for the schema."""
@@ -303,7 +350,7 @@ class DocGen:
             if key in schema:
                 out.append(_make_static_badge_item(_pl.string.camel_to_title(key), schema[key]))
         if "additionalProperties" in schema:
-            message = "Defined" if isinstance(schema, dict) else "False"
+            message = "Defined" if isinstance(schema["additionalProperties"], dict) else str(schema["additionalProperties"])
             out.append(_make_static_badge_item("Additional Properties", message))
         elif is_object:
             out.append(_make_static_badge_item("Additional Properties", "True"))
@@ -343,12 +390,17 @@ class DocGen:
         ref_id = schema.get("$ref")
         if not ref_id:
             return []
-        ref = self._get_ref(schema)
-        return [_make_static_badge_item("Ref", ref.get("title", ref_id), link=f"#")]
+        ref_schema = self._get_ref(schema)
+        ref_key = self._ref_tag_root_keygen(ref_schema)
+        badge = _make_static_badge_item(
+            label="Ref",
+            message=ref_schema.get("title", ref_id),
+            link=f"#{self._ref_tag_prefix}{_pl.string.to_slug(ref_key)}",
+        )
+        return [badge]
 
 
-
-def _make_static_badge_item(label, message, link: str | None = None) -> dict:
+def _make_static_badge_item(label: str = "", message = "", link: str | None = None) -> dict:
     badge = {"label": label, "args": {"message": str(message)}}
     if link:
         badge["link"] = link
@@ -361,7 +413,15 @@ def _sanitize_schema(schema: dict):
             continue
         if key in ("properties", "patternProperties"):
             sanitized[key] = {k: _sanitize_schema(v) for k, v in value.items()}
-        elif key in ("additionalProperties", "unevaluatedProperties", "propertyNames", "items", "unevaluatedItems", "contains", "not"):
+        elif key in (
+            "additionalProperties",
+            "unevaluatedProperties",
+            "propertyNames",
+            "items",
+            "unevaluatedItems",
+            "contains",
+            "not",
+        ) and isinstance(value, dict):
             sanitized[key] = _sanitize_schema(value)
         elif key in ("prefixItems", "allOf", "anyOf", "oneOf"):
             sanitized[key] = [_sanitize_schema(subschema) for subschema in value]

@@ -1,3 +1,3 @@
-MDit == 0.0.0.dev52
-PySerials == 0.0.0.dev55
-PyLinks == 0.0.0.dev65
+MDit == 0.0.0.dev53
+PySerials == 0.0.0.dev56
+PyLinks == 0.0.0.dev66
