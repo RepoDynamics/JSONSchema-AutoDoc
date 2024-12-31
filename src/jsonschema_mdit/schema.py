@@ -1,15 +1,23 @@
-from typing import Literal as _Literal
+from __future__ import annotations as _annotations
+from typing import TYPE_CHECKING as _TYPE_CHECKING
 
 import pyserials as _ps
 import mdit as _mdit
 
+import jsonschema_mdit.meta as _meta
+
+
+if _TYPE_CHECKING:
+    from typing import Literal, Sequence
+    from jsonschema_mdit.meta import MetaSchema
+    from jsonschema_mdit.protocol import JSONSchemaRegistry
 
 INLINE_MAX_LINE_LENGTH = 50
 
 
 def get_subschemas(
     schema: dict,
-    key: _Literal["properties", "additionalProperties", "items", "not", "if", "then", "else", "anyOf", "oneOf", "allOf"]
+    key: Literal["properties", "additionalProperties", "items", "not", "if", "then", "else", "anyOf", "oneOf", "allOf"]
 ) -> tuple[list[str], list[dict]]:
     if key == "properties":
         return schema[key].keys(), schema[key].values()
@@ -233,33 +241,67 @@ def additional_properties_to_md(schema: dict, key: str = "additionalProperties",
     return (f"[`true`](#{tag_add_props})" if tag_add_props else "[`true`]"), True
 
 
-def required_to_md(schema: dict, key: str = "required") -> tuple[str | None, bool]:
-    if key not in schema:
-        return None, False
-    return make_code_list(schema["required"])
+### NEW
+
+def sanitize(
+    schema: dict,
+    keys: Sequence[str] = ("title", "description", "default", "description_default", "examples", "description_examples"),
+):
+    sanitized = {}
+    for key, value in schema.items():
+        if key in keys:
+            continue
+        if key in ("properties", "patternProperties"):
+            sanitized[key] = {k: sanitize(v) for k, v in value.items()}
+        elif key in (
+            "additionalProperties",
+            "unevaluatedProperties",
+            "propertyNames",
+            "items",
+            "unevaluatedItems",
+            "contains",
+            "not",
+            "if",
+            "then",
+            "else",
+        ) and isinstance(value, dict):
+            sanitized[key] = sanitize(value)
+        elif key in ("prefixItems", "allOf", "anyOf", "oneOf"):
+            sanitized[key] = [sanitize(subschema) for subschema in value]
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
-def enum_to_md(schema: dict, key: str = "enum") -> tuple[str | None, bool]:
-    if key not in schema:
-        return None, False
-    return make_code_list(array=schema[key])
-
-
-def scalar_to_md(schema: dict, key: str):
-    if key not in schema:
-        return None, False
-    value = schema[key]
-    if isinstance(value, bool):
-        value = str(value).lower()
-    return f"`{value}`", True
-
-
-def make_code_list(array: list) -> tuple[str, bool]:
-    array_text_len = sum((len(e) for e in array))
-    if array_text_len < INLINE_MAX_LINE_LENGTH:
-        return _md.comma_list(array, item_as_code=True, as_html=False), True
-    return _md.normal_list(items=array, item_as_code=True), False
-
-
-def _text_can_be_inline(text: str) -> bool:
-    return "\n" not in text and len(str(text)) <= INLINE_MAX_LINE_LENGTH
+def get_type(schema: dict, registry: JSONSchemaRegistry | None = None) -> list[str]:
+    """Get the type of a schema."""
+    typ = schema.get(_meta.Key.TYPE)
+    if typ:
+        return [typ] if isinstance(typ, str) else typ
+    if _meta.Key.REF in schema:
+        if not registry:
+            raise ValueError("Schema has reference but no registry is provided.")
+        ref_id = schema[_meta.Key.REF]
+        ref = registry[ref_id].contents
+        ref_type = get_type(schema=ref, registry=registry)
+        if ref_type:
+            return ref_type
+    if _meta.Key.ALL_OF in schema:
+        # Return the first occurrence of type
+        for subschema in schema[_meta.Key.ALL_OF]:
+            subschema_type = get_type(subschema, registry=registry)
+            if subschema_type:
+                return subschema_type
+    for key in (_meta.Key.ONE_OF, _meta.Key.ANY_OF):
+        typ = []
+        all_defined = True
+        for subschema in schema.get(key, []):
+            subschema_types = get_type(subschema, registry=registry)
+            if not subschema_types:
+                all_defined = False
+                break
+            typ.extend(subschema_types)
+        # Only return if all subschemas define a type.
+        if all_defined:
+            return typ
+    return []
