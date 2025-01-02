@@ -9,9 +9,9 @@ class Key:
     DESCRIPTION = "description"
     DEFAULT = "default"
     EXAMPLES = "examples"
+    DEPRECATED = "deprecated"
     READ_ONLY = "readOnly"
     WRITE_ONLY = "writeOnly"
-    DEPRECATED = "deprecated"
 
     # generic
     TYPE = "type"
