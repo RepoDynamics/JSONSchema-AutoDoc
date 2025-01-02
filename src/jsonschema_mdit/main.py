@@ -11,23 +11,28 @@ import jsonschema_mdit.schema as _schema
 
 if _TYPE_CHECKING:
     from typing import Literal, Sequence, Callable
-    from jsonschema_mdit.protocol import JSONSchemaRegistry
+    from jsonschema_mdit.protocol import JSONSchemaRegistry, PageGenerator
 
 
 class DocGen:
 
     def __init__(
         self,
-
+        page_gen: PageGenerator,
+        registry: JSONSchemaRegistry | None = None,
+        ref_tag_keygen: Callable[[dict], str] = lambda schema: schema["$id"].split("/")[-1],
+        tag_prefix_ref: str = "ref",
     ):
-        self._registry: JSONSchemaRegistry | None = None
+        self._page_gen = page_gen
+        self._registry = registry
+        self._ref_tag_keygen = ref_tag_keygen
+        self._tag_prefix_ref = tag_prefix_ref
+
+        self._schema: dict = {}
         self._root_key: str = ""
         self._root_key_schema: str = ""
         self._tag_prefix: str = ""
         self._tag_prefix_schema: str = ""
-        self._tag_prefix_ref: str = ""
-        self._ref_tag_keygen: Callable[[dict], str] = lambda schema: schema["$id"]
-        self._class_name_deflist: str = ""
 
         self._ref_ids = []
         self._ref_ids_all = []
@@ -38,23 +43,16 @@ class DocGen:
     def generate(
         self,
         schema: dict,
-        registry: JSONSchemaRegistry | None = None,
         root_key: str = "$",
         root_key_schema: str = "$",
         tag_prefix: str = "config",
         tag_prefix_schema: str = "schema",
-        tag_prefix_ref: str = "ref",
-        ref_tag_keygen: Callable[[dict], str] = lambda schema: schema["$id"].split("/")[-1],
-        class_name_deflist: str = "schema-deflist",
     ):
-        self._registry = registry
+        self._schema = schema
         self._root_key = root_key
         self._root_key_schema = root_key_schema
         self._tag_prefix = tag_prefix
         self._tag_prefix_schema = tag_prefix_schema
-        self._tag_prefix_ref = tag_prefix_ref
-        self._ref_tag_keygen = ref_tag_keygen
-        self._class_name_deflist = class_name_deflist
 
         self._ref_ids = []
         self._ref_ids_all = []
@@ -89,11 +87,12 @@ class DocGen:
         return main_doc, ref_docs
 
     def _generate(self, schema: dict, path: str, schema_path: str):
-        body = {}
+        body = self._page_gen.generate_schema(schema=schema)
         self._doc.current_section.body.extend(**body)
         for complex_key, is_pattern in (
             ("properties", False),
-            ("patternProperties", True)
+            ("patternProperties", True),
+            ("dependentSchemas", )
         ):
             if complex_key in schema:
                 self._generate_properties(schema=schema, path=path, schema_path=schema_path, pattern=is_pattern)
@@ -104,6 +103,7 @@ class DocGen:
             ("items", "[*]"),
             ("unevaluatedItems", "[*]"),
             ("contains", "[*]"),
+            ("contentSchema", ""),
             ("not", ""),
         ):
             sub_schema = schema.get(schema_key)
@@ -206,34 +206,17 @@ class DocGen:
             ),
             key=f"{"pattern-" if pattern else ""}properties"
         )
-        self._doc.current_section.body.append(f'<div class="{self._class_name_deflist}">')
+        body = self._page_gen.generate_properties()
+        self._doc.current_section.body.extend(**body)
         for key, sub_schema in schema["patternProperties" if pattern else "properties"].items():
             path_next = f"{path}[{key}]" if pattern else f"{path}.{key}"
-            list_item_body = _mdit.block_container(
-                self._make_header_badges(schema=sub_schema, path=path_next, size="medium", required=key in schema.get("required", {}))
-            )
-            list_item_body._IS_MD_CODE = True
-            title = sub_schema.get("title")
-            desc = sub_schema.get("description")
-            if desc:
-                list_item_body.append(desc.split("\n\n")[0].strip())
-            elif title:
-                list_item_body.append(title.strip())
             schema_path_next = f"{schema_path_index}.{key}"
-            self._doc.current_section.body.append(
-                _mdit.container(
-                    _mdit.element.html("div", f"[`{key}`](#{self._make_schema_tag(schema_path_next)})", attrs={"class": "key"}),
-                    _mdit.element.html("div", list_item_body, attrs={"class": "summary"}),
-                    content_separator="\n"
-                )
-            )
             self._doc.open_section(
                 heading=self._make_heading(key=key, schema_path=schema_path_next, schema=sub_schema),
-                key=_pl.string.to_slug((title or key) if pattern else key)
+                key=_pl.string.to_slug((sub_schema.get("title") or key) if pattern else key)
             )
             self._generate(schema=sub_schema, path=path_next, schema_path=schema_path_next)
             self._doc.close_section()
-        self._doc.current_section.body.append(f'</div>')
         self._doc.close_section()
         return
 
@@ -250,34 +233,26 @@ class DocGen:
 
     def _make_heading(self, schema_path: str, schema: dict | None = None, key: str = "", key_before_ref: bool = True) -> _mdit.element.Heading:
         """Create a document heading with target anchor for a schema."""
-        return _mdit.element.heading(
-            content=self._make_title(key=key, schema=schema, key_before_ref=key_before_ref),
-            name=self._make_schema_tag(schema_path),
-        )
-
-    def _make_title(self, key: str = "", schema: dict | None = None, key_before_ref: bool = True) -> str:
-        """Create a title for the schema."""
         if not schema:
             schema = {}
         title = schema.get("title")
-        if title:
-            return title
-        ref = self._get_ref(schema)
-        if key_before_ref:
-            if key:
-                title = _pl.string.camel_to_title(_pl.string.snake_to_camel(key))
-            elif ref and "title" in ref:
-                title = ref["title"]
+        if not title:
+            ref = self._get_ref(schema)
+            if key_before_ref:
+                if key:
+                    title = _pl.string.camel_to_title(_pl.string.snake_to_camel(key))
+                elif ref and "title" in ref:
+                    title = ref["title"]
+                else:
+                    raise ValueError(f"No title for schema {schema}")
             else:
-                raise ValueError(f"No title for schema {schema}")
-        else:
-            if ref and "title" in ref:
-                title = ref["title"]
-            elif key:
-                title = _pl.string.camel_to_title(_pl.string.snake_to_camel(key))
-            else:
-                raise ValueError(f"No title for schema {schema}")
-        return title
-
-    def _make_schema_tag(self, schema_path: str):
-        return _pl.string.to_slug(f"{self._tag_prefix_schema}{schema_path}")
+                if ref and "title" in ref:
+                    title = ref["title"]
+                elif key:
+                    title = _pl.string.camel_to_title(_pl.string.snake_to_camel(key))
+                else:
+                    raise ValueError(f"No title for schema {schema}")
+        return _mdit.element.heading(
+            content=title,
+            name=_pl.string.to_slug(f"{self._tag_prefix_schema}{schema_path}"),
+        )
