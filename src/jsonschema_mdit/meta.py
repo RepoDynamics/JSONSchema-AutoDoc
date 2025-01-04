@@ -22,6 +22,7 @@ class Key:
     ID = "$id"
     REF = "$ref"
     DEFS = "$defs"
+    ANCHOR = "$anchor"
 
     # schema composition
     ALL_OF = "allOf"

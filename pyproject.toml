@@ -17,11 +17,11 @@ namespaces = true
 # ----------------------------------------- Project Metadata -------------------------------------
 #
 [project]
-version = "0.0.0.dev5"
+version = "0.0.0.dev6"
 name = "JSONSchema-MDit"
 requires-python = ">=3.10"
 dependencies = [
-    "MDit == 0.0.0.dev55",
-    "PySerials == 0.0.0.dev58",
-    "PyLinks == 0.0.0.dev68",
+    "MDit == 0.0.0.dev56",
+    "PySerials == 0.0.0.dev59",
+    "PyLinks == 0.0.0.dev69",
 ]

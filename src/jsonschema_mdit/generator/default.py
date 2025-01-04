@@ -1,20 +1,21 @@
 from __future__ import annotations as _annotations
 
 from typing import TYPE_CHECKING as _TYPE_CHECKING
+import re as _re
 
 import mdit as _mdit
 import pyserials as _ps
 import pylinks as _pl
 
 import jsonschema_mdit.meta as _meta
-import jsonschema_mdit.schema as _schemator
+import jsonschema_mdit.schema as _schema
 
 if _TYPE_CHECKING:
-    from typing import Literal, Sequence, Callable, Any
+    from typing import Literal, Callable, Any
     from jsonschema_mdit.protocol import JSONSchemaRegistry
 
 
-class DefaultGenerator:
+class DefaultPageGenerator:
     """Single schema generator.
 
     Parameters
@@ -28,13 +29,11 @@ class DefaultGenerator:
     def __init__(
         self,
         registry: JSONSchemaRegistry | None = None,
-        key_title_gen: Callable[[str], str] = lambda keyword: _pl.string.camel_to_title(keyword),
-        value_code_gen: Callable[[dict | list | str | float | int | bool], str] = lambda value: _ps.write.to_yaml_string,
-        value_code_language: str = "yaml",
+        ref_name_gen: Callable[[str, dict], str] = lambda ref_id, schema: schema.get("title", ref_id),
+        title_gen: Callable[[str], str] = lambda keyword: _pl.string.camel_to_title(keyword.removeprefix("$")),
+        code_gen: Callable[[dict | list | str | float | int | bool], str] = lambda value: _ps.write.to_yaml_string(value, end_of_file_newline=False).strip(),
+        code_language: str = "yaml",
         class_prefix: str = "jsonschema-",
-        ref_tag_prefix: str = "jsonschema-ref",
-        ref_tag_gen: Callable[[dict], str] = lambda schema: schema["$id"],
-        ref_name_gen: Callable[[dict], str] = lambda schema: schema.get("title", schema["$id"]),
         keyword_title_prefix: str = "",
         keyword_title_suffix: str = "_title",
         keyword_description_prefix: str = "",
@@ -47,82 +46,82 @@ class DefaultGenerator:
         badges_inline: dict | None = None,
     ):
         self._registry = registry
-        self._key_title_gen = key_title_gen
-        self._value_code_gen = value_code_gen
-        self._value_code_language = value_code_language
-        self._ref_tag_gen = ref_tag_gen
+        self._key_title_gen = title_gen
+        self._value_code_gen = code_gen
+        self._value_code_language = code_language
         self._ref_name_gen = ref_name_gen
         self._keyword_title_prefix = keyword_title_prefix
         self._keyword_title_suffix = keyword_title_suffix
         self._keyword_description_prefix = keyword_description_prefix
         self._keyword_description_suffix = keyword_description_suffix
         self._class_prefix = class_prefix
-        self._badge_permissive = badge_permissive or {"color": "#00802B"}
-        self._badge_restrictive = badge_restrictive or {"color": "#AF1F10"}
-        self._ref_tag_prefix = ref_tag_prefix
+        self._badge_config_default = badge or {}
+        self._badge_config_permissive = badge_permissive or {"color": "#00802B"}
+        self._badge_config_restrictive = badge_restrictive or {"color": "#AF1F10"}
 
-        self._badges_header_default = badges_header if badges_header is not None else {
-            "classes": ["jsonschema-badge-header"]
-        }
-        self._badges_inline_default = badges_inline if badges_inline is not None else {
-            "classes": ["jsonschema-badge-inline"]
-        }
-        self._badge_default = badge or {}
-
-        badges = badges if badges is not None else {
+        self._badges_header_default = badges_header or {}
+        self._badges_inline_default = badges_inline or {}
+        for badge_config, suffix in (
+            (self._badges_header_default, "header"),
+            (self._badges_inline_default, "inline"),
+        ):
+            classes = badge_config.setdefault("classes", [])
+            classes.extend([self._make_class_name("badge"), self._make_class_name("badge", suffix)])
+        badges = badges or {
             "separator": 2,
             "style": "flat-square",
             "color": "#0B3C75"
         }
-        badge_default = {
-            _meta.Key.TYPE: {"label": "Type"},
-            _meta.Key.ID: {"label": "ID"},
-            _meta.Key.REF: {"label": "Ref"},
-            _meta.Key.DEFS: {"label": "Defs"},
-            _meta.Key.ALL_OF: {"label": "All Of"},
-            _meta.Key.ANY_OF: {"label": "Any Of"},
-            _meta.Key.REQUIRED: {"color": "#AF1F10"},
-            _meta.Key.DEPRECATED: {"color": "#AF1F10"},
-            _meta.Key.READ_ONLY: {"color": "#D93402"},
-            _meta.Key.WRITE_ONLY: {"color": "#D93402"}
-        }
         _ps.update.dict_from_addon(data=self._badges_header_default, addon=badges)
         _ps.update.dict_from_addon(data=self._badges_inline_default, addon=badges)
-        _ps.update.dict_from_addon(data=self._badge_default, addon=badge_default)
+        for badge_config in (self._badges_header_default, self._badges_inline_default):
+            badge_config["classes"] = list(set(badge_config["classes"]))
 
         self._schema: dict = {}
-        self._schema_jsonpath: str = ""
-        self._schema_tag_prefix: str = ""
+        self._schema_uri: str = ""
         self._instance_jsonpath: str = ""
         return
 
-    def generate_schema(
+    def generate(
         self,
+        page_type: Literal["schema", "properties", "pattern_properties", "dependent_schemas", "if_then_else"],
         schema: dict,
-        schema_jsonpath: str,
-        schema_tag_prefix: str,
-        instance_jsonpath: str
-    ) -> dict:
-        """Generate document body for a schema.
-
-        Parameters
-        ----------
-        schema
-            Schema to generate.
-        schema_jsonpath
-            JSONPath to schema.
-        schema_tag_prefix
-            Tag prefix of the schema.
-        instance_jsonpath
-            JSONPath to instances defined by the schema.
-        """
+        schema_uri: str,
+        instance_jsonpath: str,
+    ):
         self._schema = schema
-        self._schema_jsonpath = schema_jsonpath
-        self._schema_tag_prefix = schema_tag_prefix
+        self._schema_uri = schema_uri
         self._instance_jsonpath = instance_jsonpath
+        if page_type == "schema":
+            return self._generate_schema()
+        if page_type == "if_then_else":
+            return self._generate_if_then_else()
+        if page_type == "dependent_schemas":
+            return self._generate_dependent_schemas()
+        return self._generate_props(pattern=page_type == "pattern_properties")
 
+    def generate_refs(self, refs: dict[str, list[str]]):
+        out = []
+        resolver = self._registry.resolver()
+        for ref, uris in refs.items():
+            ref_schema = resolver.lookup(ref)
+            out.append(f"- [{ref_schema.contents.get("title", ref)}](#{_pl.string.to_slug(ref)})")
+            for uri in uris:
+                out.append(f"  - [{uri}](#{_pl.string.to_slug(uri)})")
+        return {"list": "\n".join(out)}
+
+    def generate_index(self, paths: dict[str, list[str]], instance_id_prefix: str):
+        out = []
+        for path, uris in sorted(paths.items()):
+            instance_id = _pl.string.to_slug(f"{instance_id_prefix}{path}")
+            out.append(f"- [`{path}`]{{#{instance_id}}}")
+            for uri in uris:
+                out.append(f"  - [{self._escape(uri.removesuffix("#"))}](#{_pl.string.to_slug(uri)})")
+        return {"list": "\n".join(out)}
+
+    def _generate_schema(self) -> dict:
         body = {
-            "badges": self._generate_badges(instance_jsonpath=instance_jsonpath),
+            "badges": self._generate_badges(inline=False),
             "seperator": "<hr>",
         }
         summary = self._generate_summary()
@@ -134,62 +133,54 @@ class DefaultGenerator:
             body["description"] = description
         return body
 
-    def generate_properties(
-        self
-    ):
-        return
-
-    def generate_pattern_properties(self):
-        return
-
-    def generate_if_then_else(self):
+    def _generate_if_then_else(self):
+        schema = self._schema
+        schema_uri = self._schema_uri
         out = {"div_open": f'<div class="{self._make_class_name("deflist")}">'}
         for key in ("if", "then", "else"):
-            sub_schema = self._schema.get(key)
-            if not sub_schema:
+            self._schema = schema.get(key)
+            if not self._schema:
                 continue
-            list_item_body = _mdit.block_container(
-                self._make_header_badges(schema=sub_schema, path=path, size="medium")
-            )
+            self._schema_uri = f"{schema_uri}/{key}"
+            list_item_body = _mdit.block_container(self._generate_badges(inline=True))
             list_item_body._IS_MD_CODE = True
-            title = sub_schema.get("title")
-            desc = sub_schema.get("description")
-            if desc:
-                list_item_body.append(desc.split("\n\n")[0].strip())
-            elif title:
-                list_item_body.append(title.strip())
-            schema_path_next = f"{schema_path}.{key}"
-            out[key] =(
-                _mdit.container(
-                    _mdit.element.html("div", f"[{key.title()}](#{self._make_schema_tag(schema_path_next)})",
-                                       attrs={"class": "key"}),
-                    _mdit.element.html("div", list_item_body, attrs={"class": "summary"}),
-                    content_separator="\n"
-                )
+            summary = self._generate_summary()
+            if summary:
+                list_item_body.append(summary)
+            entry = _mdit.container(
+                _mdit.element.html(
+                    tag="div",
+                    content=f"[{key.title()}](#{self._make_tag(key)})",
+                    attrs={"class": "key"}
+                ),
+                _mdit.element.html("div", list_item_body, attrs={"class": "summary"}),
+                content_separator="\n"
             )
+            out[key] = entry
         out["div_close"] = "</div>"
         return out
 
     def _generate_props(self, pattern: bool):
         out = {"div_open": f'<div class="{self._make_class_name("deflist")}">'}
-        for key, sub_schema in self._schema.items():
+        schema_uri = self._schema_uri
+        props_key = _meta.Key.PATTERN_PROPERTIES if pattern else _meta.Key.PROPERTIES
+        instance_jsonpath = self._instance_jsonpath
+        for key, sub_schema in self._schema[props_key].items():
+            self._schema = sub_schema
+            self._schema_uri = f"{schema_uri}/{key}"
             path_suffix = f"[{key}]" if pattern else f".{key}"
-            path_next = f"{self._instance_jsonpath}{path_suffix}"
-            list_item_body = _mdit.block_container(
-                self._make_header_badges(schema=sub_schema, path=path_next, size="medium")
-            )
+            self._instance_jsonpath = f"{instance_jsonpath}{path_suffix}"
+            list_item_body = _mdit.block_container(self._generate_badges(inline=True))
             list_item_body._IS_MD_CODE = True
-            title = sub_schema.get("title")
-            desc = sub_schema.get("description")
-            if desc:
-                list_item_body.append(desc.split("\n\n")[0].strip())
+            title = sub_schema.get(_meta.Key.TITLE)
+            summary = sub_schema.get(_meta.Key.SUMMARY)
+            if summary:
+                list_item_body.append(summary)
             elif title:
-                list_item_body.append(title.strip())
-            props_key = _meta.Key.PATTERN_PROPERTIES if pattern else _meta.Key.PROPERTIES
-            prop_tag = self._make_tag(self._schema_jsonpath, props_key, key)
+                list_item_body.append(title)
             out[f"prop_{key}"] = (
                 _mdit.container(
-                    _mdit.element.html("div", f"[`{key}`](#{prop_tag})",
+                    _mdit.element.html("div", f"[`{key}`](#{self._make_tag()})",
                                        attrs={"class": self._make_class_name("deflist", "key")}),
                     _mdit.element.html("div", list_item_body, attrs={"class": self._make_class_name("deflist", "summary")}),
                     content_separator="\n"
@@ -198,12 +189,13 @@ class DefaultGenerator:
         out["div_close"] = "</div>"
         return out
 
-    def _generate_badges(self, instance_jsonpath: str):
-        badge_items = [self._make_badge_kwargs(key="JSONPath", message=instance_jsonpath, label="JSONPath")]
+    def _generate_badges(self, inline: bool):
+        badge_items = []
         for key in (
             _meta.Key.DEPRECATED,
             _meta.Key.READ_ONLY,
             _meta.Key.WRITE_ONLY,
+            _meta.Key.DEFAULT,
             _meta.Key.TYPE,
             # string
             _meta.Key.FORMAT,
@@ -229,12 +221,11 @@ class DefaultGenerator:
             _meta.Key.MAX_PROPERTIES,
             _meta.Key.UNEVALUATED_PROPERTIES,
             # complex
-            _meta.Key.DEFAULT,
             _meta.Key.REQUIRED,
             _meta.Key.DEPENDENT_REQUIRED,
             _meta.Key.CONST,
-            _meta.Key.PATTERN,
             _meta.Key.ENUM,
+            _meta.Key.PATTERN,
 
             _meta.Key.CONTENT_SCHEMA,
 
@@ -255,26 +246,29 @@ class DefaultGenerator:
             _meta.Key.IF,
             _meta.Key.REF,
         ):
-            method_name = f"_badge_{_pl.string.camel_to_snake(key)}"
+            method_name = f"_badge_{_pl.string.camel_to_snake(key.removeprefix("$"))}"
             if hasattr(self, method_name):
                 badge_item = getattr(self, method_name)()
                 if badge_item:
                     badge_items.append(badge_item)
-        return self._make_badges(items=badge_items, inline=False)
+        return self._make_badges(items=badge_items, inline=inline)
 
     def _generate_tabs(self):
-        tab_items = [
-            getattr(self, f"tab_{_pl.string.camel_to_snake(key)}")()
-            for key in (
-                _meta.Key.DEFAULT,
-                _meta.Key.REQUIRED,
-                _meta.Key.DEPENDENT_REQUIRED,
-                _meta.Key.CONST,
-                _meta.Key.PATTERN,
-                _meta.Key.ENUM,
-                _meta.Key.EXAMPLES
-            ) if key in self._schema
-        ]
+        tab_items = []
+        tab_jsonpath = self._tab_jsonpath()
+        if tab_jsonpath:
+            tab_items.append(tab_jsonpath)
+        for key in (
+            _meta.Key.DEFAULT,
+            _meta.Key.REQUIRED,
+            _meta.Key.DEPENDENT_REQUIRED,
+            _meta.Key.CONST,
+            _meta.Key.PATTERN,
+            _meta.Key.ENUM,
+            _meta.Key.EXAMPLES
+        ):
+            if key in self._schema:
+                tab_items.append(getattr(self, f"_tab_{_pl.string.camel_to_snake(key)}")())
         tab_items.append(self._tab_jsonschema())
         return _mdit.element.tab_set(content=tab_items, classes=[self._make_class_name("tab-set")])
 
@@ -531,34 +525,35 @@ class DefaultGenerator:
 
     def _badge_ref(self) -> dict | None:
         key = _meta.Key.REF
-        ref_id = self._schema.get(key)
+        ref_id: str = self._schema.get(key)
         if not ref_id:
             return
-        if not self._registry:
-            raise ValueError("Schema has ref but no registry given.")
-        ref_schema = self._registry[ref_id].contents
-        ref_key = self._ref_tag_gen(ref_schema)
+        ref_uri = _schema.resolve_ref(ref_id, self._schema_uri)
+        ref_schema = self._registry.resolver().lookup(ref_uri).contents
         return self._make_badge_kwargs(
             key=key,
-            message=self._ref_name_gen(ref_schema),
-            link=f"#{self._ref_tag_prefix}-{_pl.string.to_slug(ref_key)}",
+            message=self._ref_name_gen(ref_id, ref_schema),
+            link=f"#{_pl.string.to_slug(ref_uri)}",
             title=f"This schema references another schema with ID '{ref_id}'."
         )
 
+    def _tab_jsonpath(self) -> _mdit.element.TabItem | None:
+        if not self._instance_jsonpath:
+            return
+        content = _mdit.element.code_block(
+            content=self._instance_jsonpath,
+            language="text",
+        )
+        return self._make_tab_item(key="JSONPath", content=content, title="JSONPath")
 
-
-
-    def tab_const(self):
-        return self._make_tab_item_simple(_meta.Key.CONST)
-
-    def _tab_pattern(self):
-        return self._make_tab_item_simple(_meta.Key.PATTERN)
+    def _tab_default(self) -> _mdit.element.TabItem | None:
+        return self._make_tab_item_simple(_meta.Key.DEFAULT)
 
     def _tab_required(self):
-        """Make tab for `required` and `dependentRequired` keywords."""
-        required = self._schema.get(_meta.Key.REQUIRED, [])
-        dep_required = self._schema.get(_meta.Key.DEPENDENT_REQUIRED, {})
-        if not (required or dep_required):
+        """Make tab for `required` keyword."""
+        key = _meta.Key.REQUIRED
+        required = self._schema.get(key, [])
+        if not required:
             return
         req_list = []
         properties = self._schema.get(_meta.Key.PROPERTIES, {})
@@ -568,6 +563,19 @@ class DefaultGenerator:
                 tag = self._make_tag(_meta.Key.PROPERTIES, req)
                 req_code = f"[{req_code}](#{tag})"
             req_list.append(req_code)
+        return self._make_tab_item(
+            key=key,
+            content=_mdit.element.unordered_list(req_list),
+        )
+
+    def _tab_dependent_required(self):
+        """Make tab for `dependentRequired` keyword."""
+        key = _meta.Key.DEPENDENT_REQUIRED
+        dep_required = self._schema.get(key, {})
+        if not dep_required:
+            return
+        req_list = []
+        properties = self._schema.get(_meta.Key.PROPERTIES, {})
         for dependency, dependents in sorted(dep_required.items()):
             dependency_code = f"`{dependency}`"
             if dependency in properties:
@@ -586,33 +594,26 @@ class DefaultGenerator:
                     _mdit.element.unordered_list(deps_list),
                 )
             )
-        self._make_tab_item(
+        return self._make_tab_item(
+            key=key,
             content=_mdit.element.unordered_list(req_list),
-            title="Required Properties",
-            key=_meta.Key.REQUIRED
         )
-        return
+
+    def _tab_const(self):
+        return self._make_tab_item_simple(_meta.Key.CONST)
+
+    def _tab_pattern(self):
+        return self._make_tab_item_simple(_meta.Key.PATTERN)
+
+    def _tab_enum(self):
+        return self._make_tab_item_array(_meta.Key.ENUM)
+
+    def _tab_examples(self) -> _mdit.element.TabItem | None:
+        return self._make_tab_item_array(_meta.Key.EXAMPLES)
 
     def _tab_jsonschema(self):
 
-        def schema_badges():
-            badge_items = []
-            _id = schema_id or schema.get(_meta.Key.ID)
-            if _id:
-                schema_id_badge = self._make_badge_kwargs(
-                    key=_meta.Key.ID,
-                    message=_id,
-                )
-                badge_items.append(schema_id_badge)
-            path_badge = self._make_badge_kwargs(
-                key="JSONPath",
-                message=schema_jsonpath,
-                label="JSONPath"
-            )
-            badge_items.append(path_badge)
-            return self._make_badges(items=badge_items, inline=True)
-
-        sanitized_schema = _schemator.sanitize(schema)
+        sanitized_schema = _schema.sanitize(self._schema)
         yaml_dropdown = _mdit.element.dropdown(
             title="YAML",
             body=_mdit.element.code_block(
@@ -628,21 +629,20 @@ class DefaultGenerator:
                 language="yaml",
             ),
         )
-        add_tab_item(
-            key="schema",
-            content=_mdit.block_container(schema_badges(), yaml_dropdown, json_dropdown),
-            title="JSONSchema"
+        uri_dropdown = _mdit.element.dropdown(
+            title="URI",
+            body=_mdit.element.code_block(
+                content=self._schema_uri.removesuffix("#"),
+                language="text",
+            ),
+            opened=True,
+            color="info",
         )
-        return
-
-    def _tab_default(self) -> _mdit.element.TabItem | None:
-        return self._make_tab_item_simple(_meta.Key.DEFAULT)
-
-    def _tab_enum(self):
-        return self._make_tab_item_array(_meta.Key.ENUM)
-
-    def _tab_examples(self) -> _mdit.element.TabItem | None:
-        return self._make_tab_item_array(_meta.Key.EXAMPLES)
+        return self._make_tab_item(
+            key="schema",
+            content=_mdit.block_container(uri_dropdown, yaml_dropdown, json_dropdown),
+            title="JSON Schema"
+        )
 
     def _make_badges(self, items: list[dict], inline: bool):
         badges = _mdit.element.badges(
@@ -653,7 +653,7 @@ class DefaultGenerator:
         return _mdit.element.attribute(
             badges,
             block=True,
-            classes=self._badges_inline_classes if inline else self._badges_header_classes
+            classes=[self._make_class_name("badges"), self._make_class_name("badges", "inline" if inline else "header")]
         )
 
     def _make_keyword_badge_kwargs(
@@ -673,20 +673,18 @@ class DefaultGenerator:
         if not message:
             if isinstance(value, bool):
                 message = str(value).lower()
-                badge_config = self._badge_permissive if (value is true_is_permissive) else self._badge_restrictive
+                badge_config = self._badge_config_permissive if (value is true_is_permissive) else self._badge_config_restrictive
             elif isinstance(value, list):
                 message = " | ".join(value)
             elif isinstance(value, (int, float, str)):
                 message = str(value)
             else:
                 message = message_complex if isinstance(message_complex, str) else message_complex(value)
+        title = title if isinstance(title, str) or title is None else title(value)
         return self._make_badge_kwargs(
             key=key,
-            message=message if isinstance(message, str) else message(title),
-            title=self._schema.get(
-                self._get_title_key(key),
-                title if isinstance(title, str) or title is None else title(value),
-            ),
+            message=message if isinstance(message, str) else message(value),
+            title=self._schema.get(self._get_title_key(key), title),
             config=badge_config,
             link=link if isinstance(link, str) or link is None else link(value),
         )
@@ -706,7 +704,7 @@ class DefaultGenerator:
             "alt": f"{label}: {message}" if label else message,
             "link": link,
             "title": title,
-        } | (config or {}) | self._badge_default.get(key, {})
+        } | (config or {}) | self._badge_config_default.get(key, {})
         return kwargs
 
     def _make_tab_item_array(self, key: str, title: str | None = None) -> _mdit.element.TabItem | None:
@@ -772,5 +770,9 @@ class DefaultGenerator:
         return _pl.string.to_slug(f"{self._class_prefix}{"-".join(parts)}")
 
     def _make_tag(self, *parts: str) -> str:
-        return _pl.string.to_slug(f"{self._schema_tag_prefix}-{self._schema_jsonpath}-{"-".join(parts)}")
+        return _pl.string.to_slug(f"{self._schema_uri}-{"-".join(parts)}")
 
+    @staticmethod
+    def _escape(content):
+        ascii_punctuation = r'!"#$%&\'()*+,\-./:;<=>?@[\\]^_`{|}~'
+        return _re.sub(f'([{_re.escape(ascii_punctuation)}])', r'\\\1', str(content))
