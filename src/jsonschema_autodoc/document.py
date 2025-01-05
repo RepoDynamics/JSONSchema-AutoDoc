@@ -5,23 +5,66 @@ from typing import TYPE_CHECKING as _TYPE_CHECKING
 import mdit as _mdit
 import pylinks as _pl
 
-import jsonschema_mdit.meta as _meta
-import jsonschema_mdit.schema as _schema
+import jsonschema_autodoc.meta as _meta
+import jsonschema_autodoc.schema as _schema
+
 
 if _TYPE_CHECKING:
     from typing import Any, Sequence
-    from jsonschema_mdit.protocol import JSONSchemaRegistry, PageGenerator
+    from jsonschema_autodoc.protocol import JSONSchemaRegistry, PageGenerator, SchemaInput
 
 
-class DocGen:
+def generate(
+    registry: JSONSchemaRegistry,
+    generator: PageGenerator,
+    schemas: Sequence[SchemaInput],
+) -> tuple[list[_mdit.Document], _mdit.Document]:
+    """Generate documentation for a number of JSON Schemas.
+
+    Parameters
+    ----------
+    registry
+        A schema registry containing all schemas for which
+        documentation must be built, as well as any schemas
+        referenced by those.
+    generator
+        A generator to create individual documentation pages.
+    schemas
+        Schemas to generate documentation for.
+
+    Returns
+    -------
+    Documents are returned as `mdit.Document` objects in a 2-tuple:
+    1. The first element is a list of `mdit.Document` objects corresponding to the `schemas` input list.
+    2. The second element is a single `mdit.Document` containing documentation of all referenced schemas.
+    """
+    return DocumentGenerator(registry=registry, generator=generator).generate(schemas)
+
+
+class DocumentGenerator:
+    """JSON Schema documentation generator.
+
+    Instantiate this object by providing a schema registry and a page generator.
+    You can then use the `generate` method to build documentation for specified
+    schemas from the registry.
+
+    Parameters
+    ----------
+    registry
+        A schema registry containing all schemas for which
+        documentation must be built, as well as any schemas
+        referenced by those.
+    generator
+        A generator to create individual documentation pages.
+    """
 
     def __init__(
         self,
-        page_gen: PageGenerator,
-        registry: JSONSchemaRegistry | None = None,
+        registry: JSONSchemaRegistry,
+        generator: PageGenerator,
     ):
-        self._page_gen = page_gen
         self._registry = registry
+        self._page_gen = generator
 
         self._doc: _mdit.Document = None
         self._uri_to_jpath: dict[str, list[str]] = {}
@@ -34,24 +77,27 @@ class DocGen:
         self._refs: dict[str, dict[str, Any]] = {}
         return
 
-    def generate(self, schemas: Sequence[tuple[str, str] | tuple[str, str, str]]) -> tuple[list[_mdit.Document], _mdit.Document]:
-        """Generate documentation.
+    def generate(self, schemas: Sequence[SchemaInput]) -> tuple[list[_mdit.Document], _mdit.Document]:
+        """Generate documentation for a number of JSON Schemas from the registry.
 
         Parameters
         ----------
         schemas
-            A sequence of tuples with following elements:
-            1. Schema IDs from the registry to generate documentation for.
-            2. A prefix for reference names (i.e., HTML 'id' attributes) for instances.
-            3. JSONPath of the root instance (optional, default: '$').
+            Schemas to generate documentation for.
+
+        Returns
+        -------
+        Documents are returned as `mdit.Document` objects in a 2-tuple:
+        1. The first element is a list of `mdit.Document` objects corresponding to the `schemas` input list.
+        2. The second element is a single `mdit.Document` containing documentation of all referenced schemas.
         """
         self._docs = {}
         self._refs = {}
 
         for schema_data in schemas:
-            schema_id = schema_data[0]
-            instance_id_prefix = schema_data[1]
-            instance_jsonpath = schema_data[2] if len(schema_data) > 2 else "$"
+            schema_id = schema_data["id"]
+            instance_id_prefix = schema_data["name"]
+            instance_jsonpath = schema_data.get("jsonpath", "$")
             self._uri_to_jpath = {}
             self._uri_to_ref = {}
             schema = self._registry[schema_id].contents
@@ -59,7 +105,7 @@ class DocGen:
             self._doc = _mdit.document(
                 heading=self._make_heading(schema_uri=schema_uri, schema=schema, key=instance_jsonpath)
             )
-            self._generate(schema=schema, schema_uri=schema_uri, instance_jsonpath=instance_jsonpath)
+            self._generate_schema(schema=schema, schema_uri=schema_uri, instance_jsonpath=instance_jsonpath)
             self._docs[schema_id] = {
                 "doc": self._doc,
                 "uri_to_jpath": self._uri_to_jpath,
@@ -88,7 +134,7 @@ class DocGen:
                     ),
                 )
                 schema_uri = f"{ref}{"" if "#" in ref else "#"}"
-                self._generate(schema=ref_schema, schema_uri=schema_uri, instance_jsonpath="")
+                self._generate_schema(schema=ref_schema, schema_uri=schema_uri, instance_jsonpath="")
                 self._refs[ref] = {
                     "doc": self._doc,
                     "uri_to_jpath": self._uri_to_jpath,
@@ -122,9 +168,10 @@ class DocGen:
                 generate_recursive(ref_data)
                 jsonpaths = doc["uri_to_jpath"][uri]
                 for jsonpath in jsonpaths:
-                    for ref_uri, ref_jsonpath in ref_data["uri_to_jpath"].items():
-                        new_jpath = f"{jsonpath}{ref_jsonpath}"
-                        doc["uri_to_jpath"].setdefault(ref_uri, []).append(new_jpath)
+                    for ref_uri, ref_jsonpaths in ref_data["uri_to_jpath"].items():
+                        for ref_jsonpath in ref_jsonpaths:
+                            new_jpath = f"{jsonpath}{ref_jsonpath}"
+                            doc["uri_to_jpath"].setdefault(ref_uri, []).append(new_jpath)
             doc["resolved"] = True
             return
 
@@ -145,8 +192,8 @@ class DocGen:
             out.append(doc)
         return out
 
-    def _generate(self, schema: dict, schema_uri: str, instance_jsonpath: str):
-        self._uri_to_jpath.setdefault(schema_uri, []).append(instance_jsonpath)
+    def _generate_schema(self, schema: dict, schema_uri: str, instance_jsonpath: str):
+        self._uri_to_jpath.setdefault(schema_uri.removesuffix("#"), []).append(instance_jsonpath)
         ref = schema.get(_meta.Key.REF)
         if ref:
             self._uri_to_ref[schema_uri] = _schema.resolve_ref(ref=ref, uri=schema_uri)
@@ -181,7 +228,7 @@ class DocGen:
                     self._doc.current_section.body.append(
                         f":::{{rubric}} {sub_schema["title"]}\n:heading-level: 2\n:::"
                     )
-                self._generate(sub_schema, instance_jsonpath=f"{instance_jsonpath}{instance_jsonpath_suffix}", schema_uri=schema_uri_next)
+                self._generate_schema(sub_schema, instance_jsonpath=f"{instance_jsonpath}{instance_jsonpath_suffix}", schema_uri=schema_uri_next)
                 self._doc.close_section()
         for schema_list_key, instance_jsonpath_suffix, tag_main, tag_suffix in (
             ("prefixItems", "[{}]", "--pitems", "-{}"),
@@ -207,7 +254,7 @@ class DocGen:
                         ),
                         key=idx
                     )
-                    self._generate(sub_schema, instance_jsonpath=f"{instance_jsonpath}{instance_jsonpath_suffix.format(idx)}", schema_uri=schema_uri_next)
+                    self._generate_schema(sub_schema, instance_jsonpath=f"{instance_jsonpath}{instance_jsonpath_suffix.format(idx)}", schema_uri=schema_uri_next)
                     self._doc.close_section()
                 self._doc.close_section()
         if "if" in schema:
@@ -236,7 +283,7 @@ class DocGen:
                 heading=self._make_heading(key=subkey, schema_uri=schema_uri_next, schema=sub_schema),
                 key=_pl.string.to_slug((sub_schema.get("title") or subkey) if key == _meta.Key.PATTERN_PROPERTIES else subkey)
             )
-            self._generate(schema=sub_schema, instance_jsonpath=f"{instance_jsonpath}{instance_jsonpath_next_suffix}", schema_uri=schema_uri_next)
+            self._generate_schema(schema=sub_schema, instance_jsonpath=f"{instance_jsonpath}{instance_jsonpath_next_suffix}", schema_uri=schema_uri_next)
             self._doc.close_section()
         self._doc.close_section()
         return
@@ -269,7 +316,7 @@ class DocGen:
                 self._doc.current_section.body.append(
                     f":::{{rubric}} {sub_schema["title"]}\n:heading-level: 2\n:::"
                 )
-            self._generate(schema=sub_schema, instance_jsonpath=path, schema_uri=schema_uri_next)
+            self._generate_schema(schema=sub_schema, instance_jsonpath=path, schema_uri=schema_uri_next)
             self._doc.close_section()
         self._doc.close_section()
         return

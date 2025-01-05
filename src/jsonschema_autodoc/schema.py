@@ -3,11 +3,11 @@ from __future__ import annotations as _annotations
 from typing import TYPE_CHECKING as _TYPE_CHECKING
 import urllib.parse as _urllib_parse
 
-import jsonschema_mdit.meta as _meta
+import jsonschema_autodoc.meta as _meta
 
 if _TYPE_CHECKING:
     from typing import Sequence
-    from jsonschema_mdit.protocol import JSONSchemaRegistry
+    from jsonschema_autodoc.protocol import JSONSchemaRegistry
 
 
 def sanitize(

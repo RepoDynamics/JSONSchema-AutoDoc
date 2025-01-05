@@ -18,10 +18,12 @@ namespaces = true
 #
 [project]
 version = "0.0.0.dev6"
-name = "JSONSchema-MDit"
+name = "JSONSchema-AutoDoc"
 requires-python = ">=3.10"
 dependencies = [
     "MDit == 0.0.0.dev56",
     "PySerials == 0.0.0.dev59",
     "PyLinks == 0.0.0.dev69",
+    "JSONSchemata == 0.0.0.dev55",
+    "sphinx",
 ]

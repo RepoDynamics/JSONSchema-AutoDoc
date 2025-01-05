@@ -1,9 +1,41 @@
-from typing import Literal as _Literal, Protocol as _Protocol, runtime_checkable as _runtime_checkable
+from __future__ import annotations as _annotations
+
+from typing import TYPE_CHECKING as _TYPE_CHEKING
+
+from typing import Optional as _Optional, TypedDict as _TypedDict, Literal as _Literal, Sequence as _Sequence, Protocol as _Protocol, runtime_checkable as _runtime_checkable
+import referencing as _referencing
+
+if _TYPE_CHEKING:
+    from pathlib import Path
+
+
+class SchemaInput(_TypedDict):
+    """Specifications for a schema to create documentation for.
+
+    Attributes
+    ----------
+    id
+        ID of the schema in the registry.
+    name
+        A prefix for reference names (i.e., HTML 'id' attributes)
+        created for instances defined in the schema.
+    jsonpath : optional, default: '$'
+        JSONPath of the root instance.
+    filepath : optional, default: slugified ID
+        Relative path to a directory to write the output files.
+    """
+    id: str
+    name: str
+    jsonpath: _Optional[str]
+    filepath: _Optional[str | Path]
 
 
 @_runtime_checkable
 class PageGenerator(_Protocol):
-    """Page generator."""
+    """Page generator.
+
+
+    """
 
     def generate(
         self,
@@ -12,10 +44,12 @@ class PageGenerator(_Protocol):
         schema_uri: str,
         instance_jsonpath: str,
     ):
-        """Generate document body for a schema.
+        """Generate content for the body of a page within the schema.
 
         Parameters
         ----------
+        page_type
+            Type of the page to generate content for.
         schema
             Schema to generate.
         schema_uri
@@ -59,3 +93,8 @@ class JSONSchemaRegistry(_Protocol):
 
     def __getitem__(self, key: str) -> ReferenceJSONSchema:
         ...
+
+
+JSONSchemaRegistryInput = JSONSchemaRegistry | _Sequence[
+    dict | _referencing.Resource | tuple[str, dict | _referencing.Resource]
+]

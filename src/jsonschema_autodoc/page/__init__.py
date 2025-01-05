@@ -1,0 +1,1 @@
+from jsonschema_autodoc.page.default import DefaultPageGenerator

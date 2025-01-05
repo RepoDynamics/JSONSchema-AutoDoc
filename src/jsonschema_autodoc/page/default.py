@@ -7,12 +7,12 @@ import mdit as _mdit
 import pyserials as _ps
 import pylinks as _pl
 
-import jsonschema_mdit.meta as _meta
-import jsonschema_mdit.schema as _schema
+import jsonschema_autodoc.meta as _meta
+import jsonschema_autodoc.schema as _schema
 
 if _TYPE_CHECKING:
     from typing import Literal, Callable, Any
-    from jsonschema_mdit.protocol import JSONSchemaRegistry
+    from jsonschema_autodoc.protocol import JSONSchemaRegistry
 
 
 class DefaultPageGenerator:
@@ -75,7 +75,7 @@ class DefaultPageGenerator:
         _ps.update.dict_from_addon(data=self._badges_header_default, addon=badges)
         _ps.update.dict_from_addon(data=self._badges_inline_default, addon=badges)
         for badge_config in (self._badges_header_default, self._badges_inline_default):
-            badge_config["classes"] = list(set(badge_config["classes"]))
+            badge_config["classes"] = sorted(list(set(badge_config["classes"])))
 
         self._schema: dict = {}
         self._schema_uri: str = ""
