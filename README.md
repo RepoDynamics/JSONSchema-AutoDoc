@@ -1,1 +1,1 @@
-# JSONSchema-MDit
+# JSONSchema-AutoDoc
