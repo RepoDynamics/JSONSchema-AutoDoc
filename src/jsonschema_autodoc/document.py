@@ -184,7 +184,7 @@ class DocumentGenerator:
                     path_to_uri.setdefault(jpath, []).append(uri)
             doc: _mdit.Document = doc_data["doc"]
             doc.open_section(
-                heading=_mdit.element.heading(content="Index", name=f"{doc_id}-index"),
+                heading=_mdit.element.heading(content="Index", name=_pl.string.to_slug(f"{doc_id}-index")),
                 key="index",
             )
             doc.current_section.body.extend(**self._page_gen.generate_index(path_to_uri, doc_data["instance_id_prefix"]))

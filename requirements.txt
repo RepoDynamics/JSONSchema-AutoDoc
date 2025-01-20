@@ -1,3 +1,5 @@
-MDit == 0.0.0.dev56
-PySerials == 0.0.0.dev59
-PyLinks == 0.0.0.dev69
+MDit == 0.0.0.dev57
+PySerials == 0.0.0.dev60
+PyLinks == 0.0.0.dev70
+JSONSchemata == 0.0.0.dev56
+sphinx

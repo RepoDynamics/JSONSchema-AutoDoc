@@ -117,7 +117,8 @@ class DefaultPageGenerator:
             out.append(f"- [`{path}`]{{#{instance_id}}}")
             for uri in uris:
                 out.append(f"  - [{self._escape(uri.removesuffix("#"))}](#{_pl.string.to_slug(uri)})")
-        return {"list": "\n".join(out)}
+        intro = f"This schema defines {len(paths)} unique paths:"
+        return {"intro": intro, "list": "\n".join(out)}
 
     def _generate_schema(self) -> dict:
         body = {

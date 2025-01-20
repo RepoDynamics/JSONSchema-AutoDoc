@@ -1,4 +1,4 @@
-"""JSONSchema-MDit Sphinx extension."""
+"""JSONSchema-AutoDoc Sphinx extension."""
 
 from __future__ import annotations
 
