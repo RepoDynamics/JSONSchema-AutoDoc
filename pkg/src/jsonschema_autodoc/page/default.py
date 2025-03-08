@@ -72,8 +72,8 @@ class DefaultPageGenerator:
             "style": "flat-square",
             "color": "#0B3C75"
         }
-        _ps.update.dict_from_addon(data=self._badges_header_default, addon=badges)
-        _ps.update.dict_from_addon(data=self._badges_inline_default, addon=badges)
+        _ps.update.recursive_update(source=self._badges_header_default, addon=badges)
+        _ps.update.recursive_update(source=self._badges_inline_default, addon=badges)
         for badge_config in (self._badges_header_default, self._badges_inline_default):
             badge_config["classes"] = sorted(list(set(badge_config["classes"])))
 
