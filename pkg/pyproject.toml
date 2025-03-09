@@ -17,13 +17,13 @@ namespaces = true
 # ----------------------------------------- Project Metadata -------------------------------------
 #
 [project]
-version = "0.0.0.dev9"
+version = "0.0.0.dev10"
 name = "JSONSchema-AutoDoc"
 requires-python = ">=3.10"
 dependencies = [
-    "MDit == 0.0.0.dev58",
-    "PySerials == 0.0.0.dev61",
-    "PyLinks == 0.0.0.dev71",
-    "JSONSchemata == 0.0.0.dev57",
+    "MDit == 0.0.0.dev59",
+    "PySerials == 0.0.0.dev62",
+    "PyLinks == 0.0.0.dev72",
+    "JSONSchemata == 0.0.0.dev58",
     "sphinx",
 ]
